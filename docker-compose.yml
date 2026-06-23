@@ -1,0 +1,23 @@
+services:
+  pacemaker:
+    build: .
+    image: claude-pacemaker
+    container_name: claude-pacemaker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Read-write so the watcher can refresh the OAuth token in place.
+      - ${CLAUDE_DIR:-${HOME}/.claude}:/root/.claude
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.10"
+    # Fallbacks for `docker compose` without swarm.
+    mem_limit: 64m
+    cpus: 0.10
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
