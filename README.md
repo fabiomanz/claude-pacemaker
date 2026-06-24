@@ -80,9 +80,10 @@ docker compose logs -f
 | `PING_PROMPT` | `hi` | The prompt |
 | `MAX_TOKENS` | `1` | Cap the reply |
 | `FRESH_TOLERANCE_MIN` | `10` | Slack when judging a window "fresh" |
-| `RETRY_INTERVAL_SEC` | `120` | Wait between retries on error / at a window edge |
+| `RETRY_INTERVAL_SEC` | `120` | Base wait between retries on error / at a window edge |
 | `RESET_BUFFER_SEC` | `45` | Extra wait past a still-active window's reset |
-| `MAX_RETRIES` | `30` | Attempt cap per anchor |
+| `MAX_RETRIES` | `10` | Attempt cap per anchor |
+| `MAX_BACKOFF_SEC` | `1800` | Cap on the exponential backoff for failed pings |
 | `CLAUDE_DIR` | `$HOME/.claude` | Host dir mounted to `/root/.claude` |
 | `RESET_HEADER` | `anthropic-ratelimit-unified-reset` | Reset header to read |
 | `DEBUG` | `0` | `1` dumps the rate-limit headers |

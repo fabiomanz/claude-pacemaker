@@ -16,11 +16,12 @@ MAX_TOKENS="${MAX_TOKENS:-1}"
 FRESH_TOLERANCE_MIN="${FRESH_TOLERANCE_MIN:-10}"
 RETRY_INTERVAL_SEC="${RETRY_INTERVAL_SEC:-120}"
 RESET_BUFFER_SEC="${RESET_BUFFER_SEC:-45}"
-MAX_RETRIES="${MAX_RETRIES:-30}"
+MAX_RETRIES="${MAX_RETRIES:-10}"
+MAX_BACKOFF_SEC="${MAX_BACKOFF_SEC:-1800}"   # cap on the exponential retry backoff
 
 CREDENTIALS="${CREDENTIALS:-/root/.claude/.credentials.json}"
 API_BASE="${API_BASE:-https://api.anthropic.com}"
-OAUTH_BASE="${OAUTH_BASE:-https://console.anthropic.com}"
+OAUTH_BASE="${OAUTH_BASE:-https://platform.claude.com}"
 OAUTH_CLIENT_ID="${OAUTH_CLIENT_ID:-9d1c250a-e61b-44d9-88ed-5944d1962f5e}"
 RESET_HEADER="${RESET_HEADER:-anthropic-ratelimit-unified-reset}"
 DEBUG="${DEBUG:-0}"
@@ -124,14 +125,18 @@ ping_and_reset() {
 
 # ---- anchor: ping, then confirm a fresh window before counting it done ----
 anchor() {
-  local label="$1" attempt=0 reset now remaining wake out
+  local label="$1" attempt=0 fails=0 reset now remaining wake out backoff
   while (( attempt < MAX_RETRIES )); do
     attempt=$(( attempt + 1 ))
     log "[$label] attempt $attempt: ping ($MODEL)"
     if ! out=$(ping_and_reset); then
-      log "[$label] ping failed; retry in ${RETRY_INTERVAL_SEC}s"
-      sleep "$RETRY_INTERVAL_SEC"; continue
+      fails=$(( fails + 1 ))
+      backoff=$(( RETRY_INTERVAL_SEC << (fails - 1) ))
+      if (( backoff > MAX_BACKOFF_SEC || backoff <= 0 )); then backoff=$MAX_BACKOFF_SEC; fi
+      log "[$label] ping failed; retry in ${backoff}s"
+      sleep "$backoff"; continue
     fi
+    fails=0
     reset=$out; now=$(date +%s)
     if [[ -z "$reset" ]]; then
       log "[$label] no '$RESET_HEADER' header — cannot confirm reset (set DEBUG=1 to inspect headers); retry in ${RETRY_INTERVAL_SEC}s"
