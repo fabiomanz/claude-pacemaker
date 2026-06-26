@@ -68,6 +68,29 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+## Headless / WAF limitation
+
+On headless servers — especially VPS / datacenter IPs — Cloudflare's bot wall in
+front of the OAuth token endpoint (`platform.claude.com/v1/oauth/token`) often
+rejects the token *refresh* as automated traffic, returning a `403`/`429` that
+shows up as `rate_limit_error`. The ping itself (`api.anthropic.com`) is not
+behind that wall, so pings work but refresh fails. This is a platform-side block
+(see anthropics/claude-code#47754), not your plan usage.
+
+pacemaker sends the refresh with the real CLI's `User-Agent` to reduce the
+chance of being flagged, but that may not be enough to pass the wall. When a
+refresh is blocked it logs the cause and stops retrying for that anchor instead
+of hammering the endpoint.
+
+If your host is blocked, refresh the token **off-host** and let pacemaker only
+read and ping. The OAuth token is account-scoped, so a token minted anywhere
+moves the same 5-hour window. Practical options:
+
+- Run pacemaker on a non-blocked machine (e.g. a box on a residential IP), or
+- Refresh `~/.claude/.credentials.json` on a machine where login works and sync
+  it to the server (e.g. a periodic `scp`/`rsync` from your laptop), so the
+  mounted credentials file always holds a valid token.
+
 ## Configuration
 
 | Var | Default | Meaning |
@@ -85,6 +108,7 @@ docker compose logs -f
 | `MAX_RETRIES` | `10` | Attempt cap per anchor |
 | `MAX_BACKOFF_SEC` | `1800` | Cap on the exponential backoff for failed pings |
 | `CLAUDE_DIR` | `$HOME/.claude` | Host dir mounted to `/root/.claude` |
+| `USER_AGENT` | `claude-cli/2.1.179 (external, cli)` | Sent on refresh/ping to mimic the real CLI |
 | `RESET_HEADER` | `anthropic-ratelimit-unified-reset` | Reset header to read |
 | `DEBUG` | `0` | `1` dumps the rate-limit headers |
 

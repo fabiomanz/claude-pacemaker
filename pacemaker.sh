@@ -24,6 +24,8 @@ API_BASE="${API_BASE:-https://api.anthropic.com}"
 OAUTH_BASE="${OAUTH_BASE:-https://platform.claude.com}"
 OAUTH_CLIENT_ID="${OAUTH_CLIENT_ID:-9d1c250a-e61b-44d9-88ed-5944d1962f5e}"
 RESET_HEADER="${RESET_HEADER:-anthropic-ratelimit-unified-reset}"
+# Match the real CLI so the OAuth endpoint's bot wall is less likely to reject the refresh.
+USER_AGENT="${USER_AGENT:-claude-cli/2.1.179 (external, cli)}"
 DEBUG="${DEBUG:-0}"
 
 # Required verbatim by OAuth tokens. Set in two steps — an apostrophe inside
@@ -55,22 +57,35 @@ read_token()      { jq -r '.claudeAiOauth.accessToken  // empty' "$CREDENTIALS";
 read_refresh()    { jq -r '.claudeAiOauth.refreshToken // empty' "$CREDENTIALS"; }
 read_expiry_ms()  { jq -r '.claudeAiOauth.expiresAt    // 0'     "$CREDENTIALS"; }
 
+# Refresh the access token. Returns: 0 ok, 1 transient error, 2 endpoint blocked.
+# A "blocked" result (HTTP 403/429) means a bot wall in front of the OAuth endpoint
+# is rejecting the refresh — common on headless/datacenter hosts. Retrying won't help;
+# the token has to be refreshed off-host. See README "Headless / WAF limitation".
 refresh_token() {
-  local rt body resp at newrt exp_in new_exp tmp snippet
+  local rt body resp code at newrt exp_in new_exp tmp snippet
   rt=$(read_refresh)
   [[ -n "$rt" ]] || { log "refresh: no refresh token in $CREDENTIALS"; return 1; }
   body=$(jq -nc --arg rt "$rt" --arg cid "$OAUTH_CLIENT_ID" \
     '{grant_type:"refresh_token",refresh_token:$rt,client_id:$cid}')
-  resp=$(curl -sS -X POST "$OAUTH_BASE/v1/oauth/token" \
-    -H 'content-type: application/json' --data "$body" 2>/dev/null) \
-    || { log "refresh: request failed"; return 1; }
-  at=$(echo "$resp" | jq -r '.access_token // empty')
+  resp=$(curl -sS -w $'\n%{http_code}' -X POST "$OAUTH_BASE/v1/oauth/token" \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json' \
+    -H 'anthropic-beta: oauth-2025-04-20' \
+    -H "user-agent: $USER_AGENT" \
+    --data "$body" 2>/dev/null) || { log "refresh: request failed (network)"; return 1; }
+  code=$(printf '%s' "$resp" | tail -n1)
+  resp=$(printf '%s' "$resp" | sed '$d')
+  at=$(printf '%s' "$resp" | jq -r '.access_token // empty' 2>/dev/null) || at=""
   if [[ -z "$at" ]]; then
-    snippet=$(printf '%s' "$resp" | head -c 160)
-    log "refresh: failed ($snippet)"; return 1
+    snippet=$(printf '%s' "$resp" | tr -d '\n' | head -c 160)
+    if [[ "$code" == "403" || "$code" == "429" ]]; then
+      log "refresh: BLOCKED (HTTP $code) — the OAuth endpoint is rejecting this host's refresh (Cloudflare/WAF, typical on headless servers). Refresh the token off-host. $snippet"
+      return 2
+    fi
+    log "refresh: failed (HTTP $code) $snippet"; return 1
   fi
-  newrt=$(echo "$resp" | jq -r '.refresh_token // empty')
-  exp_in=$(echo "$resp" | jq -r '.expires_in // 0')
+  newrt=$(printf '%s' "$resp" | jq -r '.refresh_token // empty')
+  exp_in=$(printf '%s' "$resp" | jq -r '.expires_in // 0')
   new_exp=$(( ( $(date +%s) + exp_in ) * 1000 ))
   tmp=$(mktemp)
   jq --arg at "$at" --arg rt "${newrt:-$rt}" --argjson exp "$new_exp" \
@@ -102,6 +117,7 @@ do_ping() {
     -H "anthropic-version: 2023-06-01" \
     -H "anthropic-beta: oauth-2025-04-20" \
     -H "content-type: application/json" \
+    -H "user-agent: $USER_AGENT" \
     --data "$PING_BODY" 2>/dev/null || echo 000)
   if [[ "$DEBUG" == "1" ]]; then { echo "---- rate-limit headers (http $code) ----"; grep -i ratelimit "$hdr" || true; } >&2; fi
   reset_raw=$(grep -i "^${RESET_HEADER}:" "$hdr" | head -n1 | sed 's/^[^:]*: *//; s/\r$//') || true
@@ -109,14 +125,17 @@ do_ping() {
   printf '%s|%s' "$code" "$(reset_to_epoch "$reset_raw")"
 }
 
-# Sends one ping (refreshing auth once on 401/403). Echoes reset epoch; 0 on success.
+# Sends one ping (refreshing auth once on 401/403). Echoes reset epoch on success.
+# Returns: 0 ok, 1 transient failure, 2 refresh blocked (don't retry this anchor).
 ping_and_reset() {
-  ensure_token >&2 || return 1
-  local res code reset
+  local res code reset rc
+  ensure_token >&2; rc=$?
+  (( rc == 0 )) || return $rc
   res=$(do_ping); code=${res%%|*}; reset=${res##*|}
   if [[ "$code" == "401" || "$code" == "403" ]]; then
     log "ping: auth $code, refreshing and retrying once" >&2
-    refresh_token >&2 || return 1
+    refresh_token >&2; rc=$?
+    (( rc == 0 )) || return $rc
     res=$(do_ping); code=${res%%|*}; reset=${res##*|}
   fi
   [[ "$code" =~ ^2 ]] || { log "ping: HTTP $code" >&2; return 1; }
@@ -125,11 +144,16 @@ ping_and_reset() {
 
 # ---- anchor: ping, then confirm a fresh window before counting it done ----
 anchor() {
-  local label="$1" attempt=0 fails=0 reset now remaining wake out backoff
+  local label="$1" attempt=0 fails=0 reset now remaining wake out rc backoff
   while (( attempt < MAX_RETRIES )); do
     attempt=$(( attempt + 1 ))
     log "[$label] attempt $attempt: ping ($MODEL)"
-    if ! out=$(ping_and_reset); then
+    if out=$(ping_and_reset); then rc=0; else rc=$?; fi
+    if (( rc == 2 )); then
+      log "[$label] token refresh is blocked from this host — not retrying this anchor (would just hammer the bot wall). Waiting for the next anchor; refresh the token off-host to recover."
+      return 1
+    fi
+    if (( rc != 0 )); then
       fails=$(( fails + 1 ))
       backoff=$(( RETRY_INTERVAL_SEC << (fails - 1) ))
       if (( backoff > MAX_BACKOFF_SEC || backoff <= 0 )); then backoff=$MAX_BACKOFF_SEC; fi
