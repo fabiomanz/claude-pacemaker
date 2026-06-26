@@ -222,4 +222,22 @@ main() {
   done
 }
 
-main "$@"
+# `refresh` forces a one-shot token refresh and exits — use it to test whether the
+# OAuth endpoint accepts a refresh from this host without waiting for expiry.
+case "${1:-}" in
+  refresh)
+    [[ -f "$CREDENTIALS" ]] || { log "credentials not found: $CREDENTIALS"; exit 1; }
+    log "manual refresh: forcing a token refresh now"
+    if refresh_token; then
+      log "manual refresh: OK — endpoint accepts refresh from this host"; exit 0
+    fi
+    rc=$?
+    if (( rc == 2 )); then
+      log "manual refresh: BLOCKED — the OAuth endpoint is still rejecting this host (403/429)"
+    else
+      log "manual refresh: FAILED (rc=$rc)"
+    fi
+    exit "$rc"
+    ;;
+  *) main "$@" ;;
+esac
