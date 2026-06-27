@@ -6,6 +6,8 @@ set -euo pipefail
 # ---- config (all overridable from .env) ----
 TZ="${TZ:-UTC}"; export TZ
 ANCHOR="${ANCHOR:-06:20}"
+# First window of the day on Sat/Sun. Defaults to ANCHOR (no weekend difference).
+ANCHOR_WEEKEND="${ANCHOR_WEEKEND:-$ANCHOR}"
 WINDOWS="${WINDOWS:-4}"
 WINDOW_HOURS="${WINDOW_HOURS:-5}"
 
@@ -184,12 +186,18 @@ anchor() {
   return 1
 }
 
+# Local HH:MM anchor for a given date (YYYY-MM-DD): Sat/Sun use ANCHOR_WEEKEND.
+anchor_for_day() {
+  local dow; dow=$(date -d "$1" +%u)   # 1=Mon .. 6=Sat, 7=Sun
+  if (( dow >= 6 )); then echo "$ANCHOR_WEEKEND"; else echo "$ANCHOR"; fi
+}
+
 # ---- schedule: ANCHOR + k*WINDOW_HOURS, recomputed daily so it can't drift ----
 next_target() {
   local now today base t k best="" day
   now=$(date +%s); today=$(date +%F)
   for day in "$today" "$(date -d "$today +1 day" +%F)"; do
-    base=$(date -d "$day ${ANCHOR}:00" +%s)
+    base=$(date -d "$day $(anchor_for_day "$day"):00" +%s)
     for (( k=0; k<WINDOWS; k++ )); do
       t=$(( base + k * WINDOW_SEC ))
       if (( t > now )) && { [[ -z "$best" ]] || (( t < best )); }; then best=$t; fi
@@ -202,7 +210,7 @@ print_schedule() {
   local base t k day
   log "today's anchors:"
   for day in "$(date +%F)"; do
-    base=$(date -d "$day ${ANCHOR}:00" +%s)
+    base=$(date -d "$day $(anchor_for_day "$day"):00" +%s)
     for (( k=0; k<WINDOWS; k++ )); do
       t=$(( base + k * WINDOW_SEC ))
       log "  - $(date -d "@$t" '+%H:%M') (covers until $(date -d "@$((t+WINDOW_SEC))" '+%H:%M'))"
@@ -211,7 +219,7 @@ print_schedule() {
 }
 
 main() {
-  log "claude-pacemaker up | tz=$TZ anchor=$ANCHOR windows=$WINDOWS window=${WINDOW_HOURS}h model=$MODEL"
+  log "claude-pacemaker up | tz=$TZ anchor=$ANCHOR weekend=$ANCHOR_WEEKEND windows=$WINDOWS window=${WINDOW_HOURS}h model=$MODEL"
   print_schedule
   local target label secs
   while true; do

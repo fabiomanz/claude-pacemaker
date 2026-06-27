@@ -97,6 +97,7 @@ moves the same 5-hour window. Practical options:
 |-----|---------|---------|
 | `TZ` | `UTC` | Clock the anchors are pinned to |
 | `ANCHOR` | `06:20` | First window of the day (HH:MM) |
+| `ANCHOR_WEEKEND` | `$ANCHOR` | First window on Sat/Sun (HH:MM); subsequent weekend windows follow from it |
 | `WINDOWS` | `4` | Windows per day |
 | `WINDOW_HOURS` | `5` | Window length |
 | `MODEL` | `claude-haiku-4-5-20251001` | Model used for the ping |
