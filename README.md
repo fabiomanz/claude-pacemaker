@@ -91,6 +91,33 @@ moves the same 5-hour window. Practical options:
   it to the server (e.g. a periodic `scp`/`rsync` from your laptop), so the
   mounted credentials file always holds a valid token.
 
+## Re-authenticating
+
+Refresh tokens don't live forever, and they rotate: every successful refresh
+issues a new one and retires the old. If pacemaker ever loses a rotated token —
+or the token simply ages out — the endpoint answers:
+
+```
+refresh: REJECTED (HTTP 400, invalid_grant) — the refresh token is expired or revoked.
+```
+
+This is terminal. Retrying can't fix it, so pacemaker stops pinging and skips
+each anchor with a one-line notice instead of hammering the endpoint. To
+recover, mint a fresh credential where an interactive login works and copy it
+over the mounted file:
+
+```bash
+claude                                     # on your laptop, logs in
+scp ~/.claude/.credentials.json server:~/.claude/.credentials.json
+```
+
+No restart needed — pacemaker watches the file and resumes at the next anchor
+once it changes (`credentials changed on disk — resuming pings`).
+
+Run `docker compose exec pacemaker pacemaker.sh refresh` to test a refresh on
+demand. It exits `0` on success, `2` if a WAF is blocking this host, `3` if the
+credentials are dead.
+
 ## Configuration
 
 | Var | Default | Meaning |

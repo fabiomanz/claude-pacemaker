@@ -59,10 +59,17 @@ read_token()      { jq -r '.claudeAiOauth.accessToken  // empty' "$CREDENTIALS";
 read_refresh()    { jq -r '.claudeAiOauth.refreshToken // empty' "$CREDENTIALS"; }
 read_expiry_ms()  { jq -r '.claudeAiOauth.expiresAt    // 0'     "$CREDENTIALS"; }
 
-# Refresh the access token. Returns: 0 ok, 1 transient error, 2 endpoint blocked.
-# A "blocked" result (HTTP 403/429) means a bot wall in front of the OAuth endpoint
-# is rejecting the refresh — common on headless/datacenter hosts. Retrying won't help;
-# the token has to be refreshed off-host. See README "Headless / WAF limitation".
+# Fingerprint of the credentials file, used to tell whether a fresh one was
+# copied in after a terminal auth failure.
+creds_stamp() { stat -c '%Y:%s' "$CREDENTIALS" 2>/dev/null || echo missing; }
+
+# Refresh the access token.
+# Returns: 0 ok, 1 transient error, 2 endpoint blocked, 3 credentials dead.
+# "blocked" (HTTP 403/429) means a bot wall in front of the OAuth endpoint is
+# rejecting the refresh — common on headless/datacenter hosts. "dead"
+# (invalid_grant) means the refresh token is expired or revoked. Neither is
+# fixable by retrying; both need the token replaced off-host.
+# See README "Headless / WAF limitation" and "Re-authenticating".
 refresh_token() {
   local rt body resp code at newrt exp_in new_exp tmp snippet
   rt=$(read_refresh)
@@ -84,15 +91,32 @@ refresh_token() {
       log "refresh: BLOCKED (HTTP $code) — the OAuth endpoint is rejecting this host's refresh (Cloudflare/WAF, typical on headless servers). Refresh the token off-host. $snippet"
       return 2
     fi
+    if printf '%s' "$resp" | grep -q 'invalid_grant'; then
+      log "refresh: REJECTED (HTTP $code, invalid_grant) — the refresh token is expired or revoked. Retrying cannot fix this: log in again with \`claude\` on a machine where login works, then copy the new .credentials.json to $CREDENTIALS. $snippet"
+      return 3
+    fi
     log "refresh: failed (HTTP $code) $snippet"; return 1
   fi
   newrt=$(printf '%s' "$resp" | jq -r '.refresh_token // empty')
   exp_in=$(printf '%s' "$resp" | jq -r '.expires_in // 0')
   new_exp=$(( ( $(date +%s) + exp_in ) * 1000 ))
-  tmp=$(mktemp)
-  jq --arg at "$at" --arg rt "${newrt:-$rt}" --argjson exp "$new_exp" \
+  # Persist next to the credentials file so the replace is an atomic rename on the
+  # same filesystem, not a cross-device copy that can be torn by a signal.
+  # The write MUST be checked: refresh tokens rotate, so losing the new one here
+  # means the next refresh replays a spent token and the credentials die for good.
+  tmp=$(mktemp "${CREDENTIALS}.XXXXXX") || {
+    log "refresh: cannot create a temp file next to $CREDENTIALS — new token NOT saved"; return 1; }
+  if ! jq --arg at "$at" --arg rt "${newrt:-$rt}" --argjson exp "$new_exp" \
     '.claudeAiOauth.accessToken=$at | .claudeAiOauth.refreshToken=$rt | .claudeAiOauth.expiresAt=$exp' \
-    "$CREDENTIALS" > "$tmp" && mv "$tmp" "$CREDENTIALS"
+    "$CREDENTIALS" > "$tmp"; then
+    rm -f "$tmp"
+    log "refresh: could not build updated credentials (jq failed) — new token NOT saved"; return 1
+  fi
+  if ! mv "$tmp" "$CREDENTIALS"; then
+    rm -f "$tmp"
+    log "refresh: could not replace $CREDENTIALS — new token NOT saved; the refresh token just issued is lost and the stored one may already be spent"
+    return 1
+  fi
   log "refresh: token renewed, expires $(fmt $((new_exp/1000)))"
 }
 
@@ -128,7 +152,8 @@ do_ping() {
 }
 
 # Sends one ping (refreshing auth once on 401/403). Echoes reset epoch on success.
-# Returns: 0 ok, 1 transient failure, 2 refresh blocked (don't retry this anchor).
+# Returns: 0 ok, 1 transient failure, 2 refresh blocked, 3 credentials dead.
+# 2 and 3 both mean "don't retry this anchor".
 ping_and_reset() {
   local res code reset rc
   ensure_token >&2; rc=$?
@@ -154,6 +179,10 @@ anchor() {
     if (( rc == 2 )); then
       log "[$label] token refresh is blocked from this host — not retrying this anchor (would just hammer the bot wall). Waiting for the next anchor; refresh the token off-host to recover."
       return 1
+    fi
+    if (( rc == 3 )); then
+      log "[$label] credentials are dead — not retrying. Pausing all pings until $CREDENTIALS is replaced with a freshly authenticated one."
+      return 3
     fi
     if (( rc != 0 )); then
       fails=$(( fails + 1 ))
@@ -221,12 +250,23 @@ print_schedule() {
 main() {
   log "claude-pacemaker up | tz=$TZ anchor=$ANCHOR weekend=$ANCHOR_WEEKEND windows=$WINDOWS window=${WINDOW_HOURS}h model=$MODEL"
   print_schedule
-  local target label secs
+  local target label secs rc dead=""
   while true; do
     target=$(next_target); label=$(date -d "@$target" '+%H:%M'); secs=$(( target - $(date +%s) ))
     log "next anchor $(fmt "$target") (in $((secs/60))m); sleeping"
     (( secs > 0 )) && sleep "$secs"
-    anchor "$label" || true
+    # Once the credentials are known-dead, skip anchors entirely until the file
+    # changes on disk. Retrying an expired refresh token just spams the endpoint.
+    if [[ -n "$dead" ]]; then
+      if [[ "$(creds_stamp)" == "$dead" ]]; then
+        log "[$label] skipped — credentials still need re-authentication (unchanged since the last failure); copy a fresh $CREDENTIALS to resume"
+        continue
+      fi
+      log "credentials changed on disk — resuming pings"
+      dead=""
+    fi
+    if anchor "$label"; then rc=0; else rc=$?; fi
+    (( rc == 3 )) && dead=$(creds_stamp)
   done
 }
 
@@ -236,15 +276,15 @@ case "${1:-}" in
   refresh)
     [[ -f "$CREDENTIALS" ]] || { log "credentials not found: $CREDENTIALS"; exit 1; }
     log "manual refresh: forcing a token refresh now"
-    if refresh_token; then
-      log "manual refresh: OK — endpoint accepts refresh from this host"; exit 0
-    fi
-    rc=$?
-    if (( rc == 2 )); then
-      log "manual refresh: BLOCKED — the OAuth endpoint is still rejecting this host (403/429)"
-    else
-      log "manual refresh: FAILED (rc=$rc)"
-    fi
+    # Capture inside the `if` — `rc=$?` after the block would read the status of
+    # the `if` statement itself (0 when the condition was false), not the refresh.
+    if refresh_token; then rc=0; else rc=$?; fi
+    case "$rc" in
+      0) log "manual refresh: OK — endpoint accepts refresh from this host" ;;
+      2) log "manual refresh: BLOCKED — the OAuth endpoint is still rejecting this host (403/429)" ;;
+      3) log "manual refresh: DEAD CREDENTIALS — the refresh token is expired or revoked; log in again and copy a new .credentials.json to $CREDENTIALS" ;;
+      *) log "manual refresh: FAILED (rc=$rc)" ;;
+    esac
     exit "$rc"
     ;;
   *) main "$@" ;;
