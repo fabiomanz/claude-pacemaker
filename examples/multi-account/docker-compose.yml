@@ -1,0 +1,55 @@
+# claude-pacemaker — two accounts, one stack.
+#
+# Each service is an independent pacemaker: its own credentials file, its own
+# schedule. The 5-hour usage window is per-account, so the two never interact.
+#
+# `build: ../..` points at the repo root, where the Dockerfile lives. Run
+# `docker compose` from this directory.
+#
+# NOTE: values in `env_file` are NOT available for ${...} interpolation inside
+# this file — that is why the host credential paths are written out literally
+# here instead of coming from CLAUDE_DIR.
+
+services:
+  pacemaker-private:
+    build: ../..
+    image: claude-pacemaker
+    container_name: pacemaker-private
+    restart: unless-stopped
+    env_file: ./.env.private
+    volumes:
+      # Read-write: the container refreshes the OAuth token in place.
+      - ./creds/private:/root/.claude
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.10"
+    mem_limit: 64m
+    cpus: 0.10
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  pacemaker-work:
+    build: ../..
+    image: claude-pacemaker
+    container_name: pacemaker-work
+    restart: unless-stopped
+    env_file: ./.env.work
+    volumes:
+      - ./creds/work:/root/.claude
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.10"
+    mem_limit: 64m
+    cpus: 0.10
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
