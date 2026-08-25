@@ -68,6 +68,17 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+## More than one account
+
+One container drives one account: `CREDENTIALS` and the mounted credentials
+directory are both env-driven, and the 5-hour window belongs to the account, so
+a second account is just a second container. `examples/multi-account/` has a
+ready compose file for two.
+
+For a single account, stay with the setup above — see that directory's README
+for why its isolated credentials layout is the wrong default when there's only
+one token to rotate.
+
 ## Headless / WAF limitation
 
 On headless servers — especially VPS / datacenter IPs — Cloudflare's bot wall in
