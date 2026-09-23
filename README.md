@@ -122,6 +122,21 @@ claude                                     # on your laptop, logs in
 scp ~/.claude/.credentials.json server:~/.claude/.credentials.json
 ```
 
+Or do it on the server itself, without touching your own `~/.claude`: point
+the CLI at a throwaway config dir with `CLAUDE_CONFIG_DIR`, log in there, and
+copy the result over the mounted file. On a headless box the CLI prints a URL
+to open in any browser and asks you to paste back the code.
+
+```bash
+CLAUDE_CONFIG_DIR=/tmp/claude-relogin claude   # log in, then /exit
+cp /tmp/claude-relogin/.credentials.json ~/.claude/.credentials.json
+rm -rf /tmp/claude-relogin
+```
+
+Adjust the target to whatever file your container mounts (`CREDENTIALS` /
+`CLAUDE_DIR`). This works only if login itself isn't blocked from that host; if
+it is, fall back to the laptop route above.
+
 No restart needed — pacemaker watches the file and resumes at the next anchor
 once it changes (`credentials changed on disk — resuming pings`).
 

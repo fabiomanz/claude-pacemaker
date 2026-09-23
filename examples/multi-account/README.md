@@ -64,6 +64,22 @@ cp ~/.claude/.credentials.json /tmp/work.json
 On macOS the token may live in the Keychain rather than the file; export it as
 `{"claudeAiOauth":{"accessToken":…,"refreshToken":…,"expiresAt":…}}`.
 
+To renew a single account later, you can also do it directly on the server
+without logging out or touching `~/.claude`: give the CLI a throwaway config
+dir and copy the new file into that account's `creds/` folder. On a headless
+box the CLI prints a URL to open in any browser and asks you to paste back the
+code.
+
+```bash
+CLAUDE_CONFIG_DIR=/tmp/claude-relogin claude   # log in as that account, then /exit
+cp /tmp/claude-relogin/.credentials.json ~/pacemaker-multi/creds/work/.credentials.json
+rm -rf /tmp/claude-relogin
+```
+
+The container picks it up at its next anchor, no restart needed. This works
+only if login itself isn't blocked from the server; otherwise use the `scp`
+route below.
+
 Then copy both to the server:
 
 ```bash
