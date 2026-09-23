@@ -98,9 +98,8 @@ read and ping. The OAuth token is account-scoped, so a token minted anywhere
 moves the same 5-hour window. Practical options:
 
 - Run pacemaker on a non-blocked machine (e.g. a box on a residential IP), or
-- Refresh `~/.claude/.credentials.json` on a machine where login works and sync
-  it to the server (e.g. a periodic `scp`/`rsync` from your laptop), so the
-  mounted credentials file always holds a valid token.
+- Refresh `~/.claude/.credentials.json` on a machine where login works and
+  keep the server's mounted copy in sync with it.
 
 ## Re-authenticating
 
@@ -114,28 +113,13 @@ refresh: REJECTED (HTTP 400, invalid_grant) — the refresh token is expired or 
 
 This is terminal. Retrying can't fix it, so pacemaker stops pinging and skips
 each anchor with a one-line notice instead of hammering the endpoint. To
-recover, mint a fresh credential where an interactive login works and copy it
-over the mounted file:
+recover, log in again on the server into a throwaway config dir (so your own
+`~/.claude` stays untouched) and copy the result over the mounted file:
 
 ```bash
-claude                                     # on your laptop, logs in
-scp ~/.claude/.credentials.json server:~/.claude/.credentials.json
+CLAUDE_CONFIG_DIR=/tmp/relogin claude   # log in (prints a URL on headless boxes), then /exit
+cp /tmp/relogin/.credentials.json ~/.claude/.credentials.json && rm -rf /tmp/relogin
 ```
-
-Or do it on the server itself, without touching your own `~/.claude`: point
-the CLI at a throwaway config dir with `CLAUDE_CONFIG_DIR`, log in there, and
-copy the result over the mounted file. On a headless box the CLI prints a URL
-to open in any browser and asks you to paste back the code.
-
-```bash
-CLAUDE_CONFIG_DIR=/tmp/claude-relogin claude   # log in, then /exit
-cp /tmp/claude-relogin/.credentials.json ~/.claude/.credentials.json
-rm -rf /tmp/claude-relogin
-```
-
-Adjust the target to whatever file your container mounts (`CREDENTIALS` /
-`CLAUDE_DIR`). This works only if login itself isn't blocked from that host; if
-it is, fall back to the laptop route above.
 
 No restart needed — pacemaker watches the file and resumes at the next anchor
 once it changes (`credentials changed on disk — resuming pings`).
