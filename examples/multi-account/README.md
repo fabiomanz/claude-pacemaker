@@ -48,28 +48,17 @@ side. That's the only thing that actually needed changing here.
 
 ### 1. Mint one credentials file per account
 
-The `claude` CLI only holds one login at a time in
-`~/.claude/.credentials.json`, so do them one after the other on a machine
-where interactive login works (your laptop, not the server — see step 3):
+On the server, log each account in with its own `CLAUDE_CONFIG_DIR` pointing
+straight at its `creds/` folder (run from this directory). No logout dance, and `~/.claude` stays
+untouched. On a headless box the CLI prints a URL to open in any browser.
 
 ```bash
-claude                                    # log in as your private account
-cp ~/.claude/.credentials.json /tmp/private.json
-
-claude /logout
-claude                                    # log in as the work account
-cp ~/.claude/.credentials.json /tmp/work.json
+CLAUDE_CONFIG_DIR=$PWD/creds/private claude   # log in as private, then /exit
+CLAUDE_CONFIG_DIR=$PWD/creds/work    claude   # log in as work, then /exit
 ```
 
-On macOS the token may live in the Keychain rather than the file; export it as
-`{"claudeAiOauth":{"accessToken":…,"refreshToken":…,"expiresAt":…}}`.
-
-Then copy both to the server:
-
-```bash
-scp /tmp/private.json    server:~/pacemaker-multi/creds/private/.credentials.json
-scp /tmp/work.json       server:~/pacemaker-multi/creds/work/.credentials.json
-```
+Renewing one account later is the same single command; the running container
+picks up the new file at its next anchor, no restart needed.
 
 Use these dedicated directories — do **not** point either service at your real
 `~/.claude`. pacemaker rewrites `.credentials.json` in place on every refresh,
@@ -97,8 +86,8 @@ docker compose exec pacemaker-work      pacemaker.sh refresh
 ```
 
 Exit `0` = fine. `2` = the WAF is blocking this host; refresh off-host and
-`rsync`/`scp` the credentials file in on a schedule instead. `3` = that
-account's refresh token is dead, log in again for it.
+keep the credentials file in sync instead. `3` = that account's refresh token
+is dead, log in again for it (step 1).
 
 ## Two things to know about token rotation
 
