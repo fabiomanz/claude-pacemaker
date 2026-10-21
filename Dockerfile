@@ -1,4 +1,6 @@
-FROM alpine:3.20
+# The current Alpine release, so a rebuild with --pull moves on by itself
+# (3.20, pinned before, had run out of support).
+FROM alpine:3
 
 RUN apk add --no-cache bash curl jq coreutils tzdata ca-certificates
 
